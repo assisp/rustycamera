@@ -1,0 +1,11 @@
+[package]
+name = "rustycam"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+v4l = "*"
+jpeg-decoder = "*"
+sdl2 = "0.37"
+eframe = "0.28"
+catppuccin-egui = { version = "5.1", default-features = false, features = ["egui28"] }
