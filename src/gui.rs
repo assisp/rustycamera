@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::usize;
 
 use v4l::control::MenuItem;
+use v4l::framesize::Discrete;
 use v4l::prelude::*;
 use v4l::context;
 use v4l::capability::Flags;
@@ -38,6 +40,8 @@ pub struct GuiApp {
     tab: u32,
     device: v4l::Device,
     controls: Vec<V4lControl>,
+    fourcc: ([u8; 4], String),
+
 }
 
 impl GuiApp {
@@ -47,7 +51,17 @@ impl GuiApp {
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
-        let dev = v4l::Device::new(id.load(Ordering::Relaxed)).expect("v4l device"); 
+        let dev = v4l::Device::new(id.load(Ordering::Relaxed)).expect("Failed to open device");
+        let fmt = dev.format().expect("Failed to get device format");
+        let mut description = String::new();
+            
+        for formats in dev.enum_formats().expect("Failed to list device formats") {
+            if fmt.fourcc.repr == formats.fourcc.repr {
+                description = formats.description;
+                break;
+            }
+        }
+
         let ctrls = Vec::new();
 
         let mut this = Self {
@@ -55,6 +69,7 @@ impl GuiApp {
             tab: 0,
             device: dev,
             controls: ctrls,
+            fourcc: (fmt.fourcc.repr.clone(), description.clone()),
         };
 
         this.get_device_ctrls().expect("get device controls");
@@ -350,6 +365,24 @@ impl GuiApp {
                 ui.set_width(ui.available_width());
 
                 ui.separator();
+
+                //let fmt = self.device.format().expect("Failed to get device format");
+                
+                egui::ComboBox::from_label("Frame Format")
+                    .selected_text(format!("{} ({})", std::str::from_utf8(&self.fourcc.0).unwrap(), self.fourcc.1))
+                    .show_ui(ui, |ui| {
+                        for format in self.device.enum_formats().expect("Failed to get device formats") {
+
+                            let response = ui.selectable_value(&mut self.fourcc, (format.fourcc.repr, format.description.clone()), 
+                                format!("{} ({})", format.fourcc, format.description));
+                            
+                            if response.clicked() {
+                            
+                            }
+                        }
+                    });
+
+                
             })
     }
 

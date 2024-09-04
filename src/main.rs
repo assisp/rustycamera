@@ -22,8 +22,13 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
 
-    let dev = get_v4l_device(id.load(Ordering::Relaxed), width, height);
-    let fmt = dev.format().unwrap();
+    let dev = Device::new(id.load(Ordering::Relaxed)).expect("Failed to open device");
+    
+    let mut fmt = dev.format().expect("Failed to get Device format");
+    fmt.width = width;
+    fmt.height = height;
+    fmt.fourcc = FourCC::new(b"YUYV");
+    let fmt = dev.set_format(&fmt).expect("Failed to write format");
 
     //v4l capture thread
     thread::spawn(move || {
