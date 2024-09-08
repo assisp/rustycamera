@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::usize;
+use std::sync::{Arc, Mutex};
 
 use v4l::control::MenuItem;
 use v4l::framesize::Discrete;
 use v4l::prelude::*;
 use v4l::context;
 use v4l::capability::Flags;
-use v4l::video::Capture;
+use v4l::video::{Capture, Output};
 use v4l::{Format, FourCC};
 use v4l::buffer::Type;
 use v4l::io::traits::CaptureStream;
@@ -41,27 +41,39 @@ pub struct GuiApp {
     device: v4l::Device,
     controls: Vec<V4lControl>,
     fourcc: ([u8; 4], String),
-
+    framesize: (u32, u32),
+    framesize_mtx: Arc<Mutex<(u32, u32)>>,
+    fourcc_mtx: Arc<Mutex<[u8; 4]>>,
 }
 
 impl GuiApp {
     //cc 
-    pub fn new(cc: &eframe::CreationContext<'_>, id: AtomicUsize) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, 
+        id_mtx: Arc<Mutex<usize>>, 
+        framesize_mtx: Arc<Mutex<(u32, u32)>>,
+        fourcc_mtx: Arc<Mutex<[u8; 4]>>) -> Self {
         // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
-        let dev = v4l::Device::new(id.load(Ordering::Relaxed)).expect("Failed to open device");
-        let fmt = dev.format().expect("Failed to get device format");
+        let dev = v4l::Device::new(*id_mtx.lock().unwrap()).expect("Failed to open device");
+        let fmt = <Device as v4l::video::Capture>::format(&dev).expect("Failed to get device format");
         let mut description = String::new();
             
-        for formats in dev.enum_formats().expect("Failed to list device formats") {
+        for formats in <Device as v4l::video::Capture>::enum_formats(&dev).expect("Failed to list device formats") {
             if fmt.fourcc.repr == formats.fourcc.repr {
                 description = formats.description;
                 break;
             }
         }
+       
+        
+        //let framesizes = <Device as v4l::video::Capture>::enum_framesizes(&dev, fmt.fourcc).expect("Failed to get framesize").into_iter().next();
 
+        //let discrete = framesizes.unwrap().size.to_discrete().into_iter().next().unwrap();
+
+        let framesize = *framesize_mtx.lock().unwrap();
+        
         let ctrls = Vec::new();
 
         let mut this = Self {
@@ -69,7 +81,10 @@ impl GuiApp {
             tab: 0,
             device: dev,
             controls: ctrls,
-            fourcc: (fmt.fourcc.repr.clone(), description.clone()),
+            fourcc: (fmt.fourcc.repr, description.clone()),
+            framesize,
+            framesize_mtx,
+            fourcc_mtx,
         };
 
         this.get_device_ctrls().expect("get device controls");
@@ -371,17 +386,41 @@ impl GuiApp {
                 egui::ComboBox::from_label("Frame Format")
                     .selected_text(format!("{} ({})", std::str::from_utf8(&self.fourcc.0).unwrap(), self.fourcc.1))
                     .show_ui(ui, |ui| {
-                        for format in self.device.enum_formats().expect("Failed to get device formats") {
+                        for format in <Device as v4l::video::Capture>::enum_formats(&self.device)
+                            .expect("Failed to get device formats") {
 
-                            let response = ui.selectable_value(&mut self.fourcc, (format.fourcc.repr, format.description.clone()), 
-                                format!("{} ({})", format.fourcc, format.description));
-                            
-                            if response.clicked() {
-                            
-                            }
+                                 let response = ui.selectable_value(
+                                     &mut self.fourcc, 
+                                     (format.fourcc.repr, format.description.clone()), 
+                                     format!("{} ({})", format.fourcc, format.description));
+                                 
+                                 if response.clicked() {
+                                 
+                                 }
                         }
                     });
 
+                let fcc = v4l::FourCC::new(&self.fourcc.0);
+
+                egui::ComboBox::from_label("Frame Size")
+                    .selected_text(format!("{}x{}", self.framesize.0, self.framesize.1))
+                    .show_ui(ui, |ui| {
+                        for framesize in <Device as v4l::video::Capture>::enum_framesizes(&self.device, fcc)
+                            .expect("Failed to get device frame sizes") {
+                            
+                                for discrete in framesize.size.to_discrete() {
+                                    let response = ui.selectable_value(
+                                        &mut self.framesize,
+                                        (discrete.width, discrete.height),
+                                        format!("{}x{}", discrete.width, discrete.height));
+
+                                    if response.clicked() {
+                                        let mut fsize = self.framesize_mtx.lock().unwrap();
+                                        *fsize = (discrete.width, discrete.height);
+                                    }    
+                                }                                
+                        }
+                    });
                 
             })
     }
