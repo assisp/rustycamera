@@ -5,7 +5,13 @@ edition = "2021"
 
 [dependencies]
 v4l = "*"
-jpeg-decoder = "*"
+zune-core = "*"
+zune-jpeg = "*"
 sdl2 = "0.37"
 eframe = "0.28"
 catppuccin-egui = { version = "5.1", default-features = false, features = ["egui28"] }
+
+
+# `zune-jpeg` package will be always built with optimizations
+[profile.dev.package.zune-jpeg]
+opt-level = 3

@@ -1,16 +1,16 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::thread;
 
-use v4l::{prelude::*, v4l2};
-use v4l::v4l_sys::v4l2_colorfx_V4L2_COLORFX_SOLARIZATION;
+use v4l::prelude::*;
 use v4l::video::Capture;
 use v4l::buffer::Type;
 use v4l::FourCC;
 use v4l::io::traits::{CaptureStream, Stream};
 
-use jpeg_decoder as jpeg;
+use zune_core::colorspace::ColorSpace;
+use zune_core::options::DecoderOptions;
+use zune_jpeg::JpegDecoder;
 
 mod gui;
 mod render;
@@ -32,7 +32,7 @@ fn main() {
     //let fheight = 480;
     let fcc = b"YUYV";
 
-    let mut dev = Device::new(id).expect("Failed to open device");
+    let dev = Device::new(id).expect("Failed to open device");
     
     let mut fmt = dev.format().expect("Failed to get Device format");
     //fmt.width = fwidth;
@@ -69,13 +69,14 @@ fn main() {
         // None.
         loop {
 
+            let fcc = *fourcc_mtx.lock().unwrap();
             let (width, height) = *framesize_mtx.lock().unwrap();
 
-            if fmt.width != width || 
-                fmt.height != height {
+            if fmt.width != width || fmt.height != height || !fmt.fourcc.repr.eq(&fcc) {
                 
                     fmt.width = width;
                     fmt.height = height;
+                    fmt.fourcc = v4l::FourCC::new(&fcc);
 
                     stream.stop().expect("Couldn't stop video stream");
                     //must drop the old stream to set the new frame format 
@@ -91,7 +92,7 @@ fn main() {
 
             } 
             
-            let (buf, meta) = stream.next().unwrap();
+            let (buf, _meta) = stream.next().unwrap();
 
            // println!(
            //     "Buffer size: {}, seq: {}, timestamp: {}",
@@ -109,13 +110,14 @@ fn main() {
            let data = match &fmt.fourcc.repr {
                b"YUYV" => buf.to_vec(),
                b"MJPG" => {
-                   // Decode the JPEG frame to RGB
-                   let mut decoder = jpeg::Decoder::new(buf);
-                   //let info = decoder.info().unwrap();
-                   //eprintln!("{:?}", info);
-                   //rgb vec
+                    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+                    // Decode the JPEG frame to RGBA
+                    let mut decoder = JpegDecoder::new_with_options(buf, options);
+                    //let info = decoder.info().unwrap();
+                    //eprintln!("{:?}", info);
+                    //rgb vec
                    
-                   decoder.decode().expect("failed to decode JPEG")
+                    decoder.decode().expect("failed to decode JPEG")
                }
                _ => panic!("invalid buffer pixelformat"),
            };
@@ -133,7 +135,7 @@ fn main() {
     });
 
     //render thread 
-    let th_join_handle = thread::spawn( move|| {
+    let _th_join_handle = thread::spawn( move|| {
         let mut rend = render::Render::new(
             fmt.width,
             fmt.height, 
@@ -153,34 +155,4 @@ fn main() {
         )
     );
     
-}
-
-fn get_v4l_device(device_id: usize, width: u32, height: u32) -> Device {
-    // Create a new capture device with a few extra parameters
-    let dev = Device::new(device_id).expect("Failed to open device");
-
-    // Let's say we want to explicitly request another format
-    let mut fmt = dev.format().expect("Failed to read format");
-    fmt.width = width;
-    fmt.height = height;
-    fmt.fourcc = FourCC::new(b"YUYV");
-    let fmt = dev.set_format(&fmt).expect("Failed to write format");
-
-    // The actual format chosen by the device driver may differ from what we
-    // requested! Print it out to get an idea of what is actually used now.
-    println!("Format in use:\n{}", fmt);
-
-    // Now we'd like to capture some frames!
-    // First, we need to create a stream to read buffers from. We choose a
-    // mapped buffer stream, which uses mmap to directly access the device
-    // frame buffer. No buffers are copied nor allocated, so this is actually
-    // a zero-copy operation.
-
-    // To achieve the best possible performance, you may want to use a
-    // UserBufferStream instance, but this is not supported on all devices,
-    // so we stick to the mapped case for this example.
-    // Please refer to the rustdoc docs for a more detailed explanation about
-    // buffer transfers.
-
-    dev
 }

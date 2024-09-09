@@ -1,18 +1,13 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use v4l::control::MenuItem;
-use v4l::framesize::Discrete;
+use v4l::frameinterval::FrameIntervalEnum;
 use v4l::prelude::*;
-use v4l::context;
 use v4l::capability::Flags;
-use v4l::video::{Capture, Output};
-use v4l::{Format, FourCC};
-use v4l::buffer::Type;
-use v4l::io::traits::CaptureStream;
+use v4l::video::Capture;
 
 use catppuccin_egui::{FRAPPE, LATTE, MACCHIATO, MOCHA};
-use eframe::egui::{self, TextBuffer};
+use eframe::egui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CatppuccinTheme {
@@ -28,8 +23,6 @@ struct V4lControl {
     name: String,
     minimum: i64,
     maximum: i64,
-    step: u64,
-    default: i64,
     flags: v4l::control::Flags,
     items: Option<Vec<(i64, String)>>,
     current: v4l::control::Value,
@@ -40,15 +33,19 @@ pub struct GuiApp {
     tab: u32,
     device: v4l::Device,
     controls: Vec<V4lControl>,
-    fourcc: ([u8; 4], String),
-    framesize: (u32, u32),
+    fourcc_ind: usize,
+    list_fourcc: Vec<([u8; 4], String)>,
+    framesize_ind: usize,
+    list_framesize: Vec<(u32, u32)>,
+    frate_ind: usize,
+    list_frate: Vec<(u32, u32)>,
     framesize_mtx: Arc<Mutex<(u32, u32)>>,
     fourcc_mtx: Arc<Mutex<[u8; 4]>>,
 }
 
 impl GuiApp {
     //cc 
-    pub fn new(cc: &eframe::CreationContext<'_>, 
+    pub fn new(_cc: &eframe::CreationContext<'_>, 
         id_mtx: Arc<Mutex<usize>>, 
         framesize_mtx: Arc<Mutex<(u32, u32)>>,
         fourcc_mtx: Arc<Mutex<[u8; 4]>>) -> Self {
@@ -58,22 +55,51 @@ impl GuiApp {
         // for e.g. egui::PaintCallback.
         let dev = v4l::Device::new(*id_mtx.lock().unwrap()).expect("Failed to open device");
         let fmt = <Device as v4l::video::Capture>::format(&dev).expect("Failed to get device format");
-        let mut description = String::new();
-            
+        
+        let mut list_fourcc: Vec<([u8; 4], String)> = Vec::new();
+        let mut fourcc_ind = 0_usize;
+        let mut list_framesize: Vec<(u32, u32)> = Vec::new();
+        let mut framesize_ind = 0_usize;
+        let mut list_frate: Vec<(u32, u32)> = Vec::new();
+        let frate_ind = 0_usize;
+
         for formats in <Device as v4l::video::Capture>::enum_formats(&dev).expect("Failed to list device formats") {
+            
+            list_fourcc.push((formats.fourcc.repr, formats.description.clone()));
+            
             if fmt.fourcc.repr == formats.fourcc.repr {
-                description = formats.description;
-                break;
+                fourcc_ind = list_fourcc.len() - 1;
+
+                for framesize in <Device as v4l::video::Capture>::enum_framesizes(&dev, formats.fourcc)
+                    .expect("Failed to get device frame sizes") {
+                        
+                        for discrete in framesize.size.to_discrete() {
+                            
+                            list_framesize.push((discrete.width, discrete.height));
+                            
+                            if fmt.width == discrete.width && fmt.height == discrete.height {
+                                framesize_ind = list_framesize.len() - 1;
+                               
+                               for frameinterval in
+                                    <Device as v4l::video::Capture>::enum_frameintervals(&dev, 
+                                        framesize.fourcc, discrete.width, discrete.height)
+                                        .expect("Failed to list device frame rates") {
+                                   
+                                            match frameinterval.interval {
+                                                v4l::frameinterval::FrameIntervalEnum::Discrete(fraction) => {
+                                                    list_frate.push((fraction.denominator, fraction.numerator));
+                                                },
+                                                v4l::frameinterval::FrameIntervalEnum::Stepwise(_stepwise) => {
+                                                    println!("Stepwise Frame Rates not supported");
+                                                }
+                                            }
+                                }
+                            }
+                       }
+                }
             }
         }
        
-        
-        //let framesizes = <Device as v4l::video::Capture>::enum_framesizes(&dev, fmt.fourcc).expect("Failed to get framesize").into_iter().next();
-
-        //let discrete = framesizes.unwrap().size.to_discrete().into_iter().next().unwrap();
-
-        let framesize = *framesize_mtx.lock().unwrap();
-        
         let ctrls = Vec::new();
 
         let mut this = Self {
@@ -81,8 +107,12 @@ impl GuiApp {
             tab: 0,
             device: dev,
             controls: ctrls,
-            fourcc: (fmt.fourcc.repr, description.clone()),
-            framesize,
+            fourcc_ind,
+            list_fourcc,
+            framesize_ind,
+            list_framesize,
+            frate_ind,
+            list_frate,
             framesize_mtx,
             fourcc_mtx,
         };
@@ -143,8 +173,6 @@ impl GuiApp {
                 name: ctrl.name.clone(),
                 minimum: ctrl.minimum,
                 maximum: ctrl.maximum,
-                step: ctrl.step,
-                default: ctrl.default,
                 flags: ctrl.flags,
                 items: {
                     if ctrl.items.is_some() {
@@ -384,41 +412,127 @@ impl GuiApp {
                 //let fmt = self.device.format().expect("Failed to get device format");
                 
                 egui::ComboBox::from_label("Frame Format")
-                    .selected_text(format!("{} ({})", std::str::from_utf8(&self.fourcc.0).unwrap(), self.fourcc.1))
+                    .selected_text(format!("{} ({})", 
+                            std::str::from_utf8(&self.list_fourcc[self.fourcc_ind].0).unwrap(), 
+                            self.list_fourcc[self.fourcc_ind].1))
                     .show_ui(ui, |ui| {
-                        for format in <Device as v4l::video::Capture>::enum_formats(&self.device)
-                            .expect("Failed to get device formats") {
+    
+                        for (ind, format) in self.list_fourcc[..].iter().enumerate() {
 
-                                 let response = ui.selectable_value(
-                                     &mut self.fourcc, 
-                                     (format.fourcc.repr, format.description.clone()), 
-                                     format!("{} ({})", format.fourcc, format.description));
-                                 
-                                 if response.clicked() {
-                                 
-                                 }
+                            let response = ui.selectable_value(
+                                &mut self.fourcc_ind, 
+                                ind, 
+                                format!("{} ({})", std::str::from_utf8(&format.0).unwrap(), format.1));
+                                                             
+                            if response.clicked() {
+
+                                let fmt = <Device as Capture>::format(&self.device).expect("Failed to get device format");
+
+                                let fcc = format.0;
+                                let mut fcc_m = self.fourcc_mtx.lock().unwrap();
+                                *fcc_m = fcc;
+                                //update frame sizes and frame rates
+                                let fourcc = v4l::FourCC::new(&fcc);
+                                                                
+                                self.list_framesize.clear();
+                                self.list_frate.clear();
+
+                                self.framesize_ind = 0;
+
+                                for framesize in <Device as Capture>::enum_framesizes(&self.device, fourcc)
+                                    .expect("Failed to get device frame sizes") {
+                        
+                                    for discrete in framesize.size.to_discrete() {
+                            
+                                        self.list_framesize.push((discrete.width, discrete.height));
+                            
+                                        if fmt.width == discrete.width && fmt.height == discrete.height {
+                                            self.framesize_ind = self.list_framesize.len() - 1;
+                               
+                                            for frameinterval in
+                                                <Device as Capture>::enum_frameintervals(&self.device, 
+                                                    framesize.fourcc, discrete.width, discrete.height)
+                                                        .expect("Failed to list device frame rates") {
+                                   
+                                                match frameinterval.interval {
+                                                    FrameIntervalEnum::Discrete(fraction) => {
+                                                        self.list_frate.push((fraction.denominator, fraction.numerator));
+                                                    },
+                                                    FrameIntervalEnum::Stepwise(_stepwise) => {
+                                                        println!("Stepwise Frame Rates not supported");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } 
+                            }
                         }
                     });
 
-                let fcc = v4l::FourCC::new(&self.fourcc.0);
-
                 egui::ComboBox::from_label("Frame Size")
-                    .selected_text(format!("{}x{}", self.framesize.0, self.framesize.1))
+                    .selected_text(format!("{}x{}", 
+                            self.list_framesize[self.framesize_ind].0, 
+                            self.list_framesize[self.framesize_ind].1))
                     .show_ui(ui, |ui| {
-                        for framesize in <Device as v4l::video::Capture>::enum_framesizes(&self.device, fcc)
-                            .expect("Failed to get device frame sizes") {
+                        
+                        for (ind, framesize) in self.list_framesize[..].iter().enumerate() {
                             
-                                for discrete in framesize.size.to_discrete() {
-                                    let response = ui.selectable_value(
-                                        &mut self.framesize,
-                                        (discrete.width, discrete.height),
-                                        format!("{}x{}", discrete.width, discrete.height));
+                            let response = ui.selectable_value(
+                                &mut self.framesize_ind,
+                                ind,
+                                format!("{}x{}", framesize.0, framesize.1));
 
-                                    if response.clicked() {
-                                        let mut fsize = self.framesize_mtx.lock().unwrap();
-                                        *fsize = (discrete.width, discrete.height);
-                                    }    
-                                }                                
+                            if response.clicked() {
+                                //update frame rates
+                                self.list_frate.clear();
+                                self.framesize_ind = 0;
+                               
+                                let fourcc = v4l::FourCC::new(&self.list_fourcc[self.fourcc_ind].0); 
+                                for frameinterval in
+                                    <Device as Capture>::enum_frameintervals(&self.device, 
+                                        fourcc, framesize.0, framesize.1)
+                                        .expect("Failed to list device frame rates") {
+                                   
+                                            match frameinterval.interval {
+                                                FrameIntervalEnum::Discrete(fraction) => {
+                                                    self.list_frate.push((fraction.denominator, fraction.numerator));
+                                                },
+                                                FrameIntervalEnum::Stepwise(_stepwise) => {
+                                                    println!("Stepwise Frame Rates not supported");
+                                                }
+                                            }
+                                }
+
+                                //update video capture
+                                let mut fsize = self.framesize_mtx.lock().unwrap();
+                                *fsize = (framesize.0, framesize.1);
+                            }                                       
+                        }
+                    });
+
+                egui::ComboBox::from_label("Frame Rate")
+                    .selected_text(format!("{}/{}", 
+                            self.list_frate[self.frate_ind].0, 
+                            self.list_frate[self.frate_ind].1))
+                    .show_ui(ui, |ui| {
+                        
+                        for (ind, frate) in self.list_frate[..].iter().enumerate() {
+                            
+                            let response = ui.selectable_value(
+                                &mut self.frate_ind,
+                                ind,
+                                format!("{}/{}", frate.0, frate.1));
+
+                            if response.clicked() {
+                                //update frame rate
+                                let mut params = <Device as Capture>::params(&self.device)
+                                    .expect("Failed to get parameters");
+                                params.interval.denominator = frate.0;
+                                params.interval.numerator = frate.1;
+
+                                let _ = <Device as Capture>::set_params(&self.device, &params);
+                            }                                       
                         }
                     });
                 

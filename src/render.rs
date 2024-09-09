@@ -1,7 +1,6 @@
 use std::sync::mpsc;
 use std::time::SystemTime;
 
-use eframe::egui::SystemTheme;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
@@ -62,9 +61,9 @@ impl Render {
             .expect("failed to build window's canvas");
         let texture_creator = canvas.texture_creator();
         
-        let pix_fmt = match &self.fourcc {
+        let mut pix_fmt = match &self.fourcc {
             b"YUYV" => PixelFormatEnum::YUY2,
-            b"MJPG" => PixelFormatEnum::RGB24,
+            b"MJPG" => PixelFormatEnum::RGBA32,
             _ => panic!("invalid buffer pixelformat"),
         };
 
@@ -101,16 +100,26 @@ impl Render {
         
             let data = rx.recv().unwrap();
 
-            if size[0] != self.width || size[1] != self.height {
+            if size[0] != self.width || size[1] != self.height || !self.fourcc.eq(&fourcc_data[..]) {
                 self.width = size[0];
                 self.height = size[1];
+                self.fourcc.clone_from_slice(&fourcc_data);
+
+                println!("new render texture format: {} -> {}x{}", std::str::from_utf8(&self.fourcc).expect("Failed to convert fourcc to string"), self.width, self.height);
+
+                pix_fmt = match &self.fourcc {
+                    b"YUYV" => PixelFormatEnum::YUY2,
+                    b"MJPG" => PixelFormatEnum::RGBA32,
+                    _ => panic!("invalid buffer pixelformat"),
+                };
+
                 texture = texture_creator.create_texture_streaming(pix_fmt, self.width, self.height).unwrap();
                 let _ = canvas.set_logical_size(self.width, self.height);
             }
 
             texture.with_lock(None, |buffer: &mut [u8], _pitch: usize| {
                 buffer[..].clone_from_slice(&data);
-            }).expect("texture data copy");
+            }).expect("Failed texture data copy");
         
             canvas.clear();
             canvas.copy(&texture, None, None).expect("copy texture");
