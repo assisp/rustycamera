@@ -41,10 +41,12 @@ fn main() {
 
     
     let id_mtx = Arc::new(Mutex::new(id));
+    let frate_mtx = Arc::new(Mutex::new((1, 30)));
     let framesize_mtx = Arc::new(Mutex::new((fmt.width, fmt.height)));
     let fourcc_mtx : Arc<Mutex<[u8; 4]>> = Arc::new(Mutex::new(*fcc));
 
     let id_mtx_clone = id_mtx.clone();
+    let frate_mtx_clone = frate_mtx.clone();
     let framesize_mtx_clone = framesize_mtx.clone();
     let fourcc_mtx_clone = fourcc_mtx.clone();
 
@@ -56,8 +58,12 @@ fn main() {
         let mut fmt = dev.set_format(&fmt).expect("Failed to write format");
         // The actual format chosen by the device driver may differ from what we
         // requested! Print it out to get an idea of what is actually used now.
-        println!("Format in use:\n{}", fmt);        
-        
+        println!("Format in use:\n{}", fmt);
+
+        let mut parms = dev.params().expect("Failed to load device parameters");
+
+        println!("Parameters in use:\n{:?}", parms);
+ 
         // Create the stream, which will internally 'allocate' (as in map) the
         // number of requested buffers for us.
         let mut stream = MmapStream::with_buffers(&dev, Type::VideoCapture, 4)
@@ -70,7 +76,26 @@ fn main() {
         loop {
 
             let fcc = *fourcc_mtx.lock().unwrap();
+            let (frate_num, frate_denom) = *frate_mtx.lock().unwrap(); 
             let (width, height) = *framesize_mtx.lock().unwrap();
+
+            if parms.interval.denominator != frate_denom || parms.interval.numerator != frate_num {
+
+                parms.interval.denominator = frate_denom;
+                parms.interval.numerator = frate_num;
+                
+                match stream.stop() {
+            
+                    Ok(_) => { 
+                        match dev.set_params(&parms) {
+                            Ok(parms) => {println!("Parameters set to:\n{}", parms);},
+                            Err(er) => {println!("Failed to set Parameters: {}", er);}
+                        }
+                        if let Err(er) = stream.start() {println!("Failed to start video stream: {}", er);}
+                    },
+                    Err(er) => {println!("Failed to stop video stream: {}", er);}
+                }
+            }
 
             if fmt.width != width || fmt.height != height || !fmt.fourcc.repr.eq(&fcc) {
                 
@@ -150,7 +175,7 @@ fn main() {
         native_options, 
         Box::new(|cc| {
             Ok(Box::new(
-                gui::GuiApp::new(cc, id_mtx_clone, framesize_mtx_clone, fourcc_mtx_clone)))
+                gui::GuiApp::new(cc, id_mtx_clone, frate_mtx_clone, framesize_mtx_clone, fourcc_mtx_clone)))
             }
         )
     );
